@@ -1,0 +1,204 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { Badge } from '@astrojs/starlight/components';
+import path from 'node:path';
+import { parse } from '../../../lib/parse';
+import { glob } from 'node:fs/promises';
+import type { IMethodDefinition, Objects } from '@abaplint/core';
+import { Visibility } from '@abaplint/core';
+
+export async function getStaticPaths() {
+  const files = await Array.fromAsync(glob('abap/**/*.intf.abap'));
+  return files.map((file) => {
+    const slug = path.basename(file, '.intf.abap');
+    return { params: { slug } };
+  });
+}
+
+const { slug } = Astro.params;
+const filePath = path.resolve('abap', `${slug}.intf.abap`);
+const obj = parse(filePath);
+
+if (!obj || obj.getType() !== 'INTF') {
+  throw new Error(`Invalid ABAP interface: ${slug}`);
+}
+
+const intf = obj as Objects.Interface;
+const def = intf.getDefinition();
+const info = intf.getInterface();
+const attributes = def?.getAttributes()?.getAll() ?? [];
+const attributesInfo = Object.fromEntries((info?.attributes ?? []).map(a => [a.name, a]));
+const methods = Array.from(def?.getMethodDefinitions()?.getAll() ?? []);
+const types = def?.getTypeDefinitions()?.getAll() ?? [];
+
+function getAbapAccessEmoji(visibility: Visibility, isStatic: boolean): string {
+  const map: Record<Visibility, { static: string; instance: string }> = {
+    [Visibility.Public]: { static: '🟩', instance: '🟢' },
+    [Visibility.Protected]: { static: '🟨', instance: '🟡' },
+    [Visibility.Private]: { static: '🟥', instance: '🔴' },
+  };
+  return map[visibility]?.[isStatic ? 'static' : 'instance'] ?? '⚫';
+}
+
+function getMethodSignature(method: IMethodDefinition): string {
+  
+  const result = [];
+
+  //importing
+  const importing = method.getParameters()?.getImporting();
+  if (importing) {
+    result.push(`IMPORTING`)
+    result.push(...importing.map(p => `  ${p.getName()} TYPE ${p.getType()?.toText(0)}`));    
+  }
+
+  //changing
+  const changing = method.getParameters()?.getChanging();
+  if (changing) {
+    result.push(`changing`)
+    result.push(...changing.map(p => `  ${p.getName()} TYPE ${p.getType()?.toText(0)}`));        
+  }
+
+  
+  //exporting
+  const exporting = method.getParameters()?.getExporting();
+  if (exporting) {
+    result.push(`exporting`)
+    result.push(...exporting.map(p => `  ${p.getName()} TYPE ${p.getType()?.toText(0)}`));        
+  }
+
+  const returning = method.getParameters()?.getReturning();
+  if (returning) {
+    result.push(`RETRUNING VALUE(${returning.getName()}) TYPE ${returning.getType()?.toText(0)}`)
+  }
+    
+  return result.join('\n');
+}
+
+const headings = [
+  { depth: 2, slug: 'methods', text: 'Methods' },
+  ...methods.map(method => {
+    const emoji = getAbapAccessEmoji(method.getVisibility(), method.isStatic());
+    return {
+      depth: 3,
+      slug: method.getName().toLowerCase(),
+      text: `${emoji} ${method.getName()}()`
+    };
+  }),
+  { depth: 2, slug: 'attributes', text: 'Attributes' },
+  { depth: 2, slug: 'types', text: 'Types' }
+];
+
+const enum BadgeVariant {
+  Default = 'default',
+  Note = 'note',
+  Danger = 'danger',
+  Success = 'success',
+  Caution = 'caution',
+  Tip = 'tip',
+}
+
+const enum LabelType {
+  Interface = 'Interface',
+  Class = 'Class',
+  Method = 'Method',
+  Attribute = 'Attribute',
+  Type = 'Type',
+  Event = 'Event',
+}
+interface Label {
+  letter: string  
+  variant?: BadgeVariant
+}
+
+const LabelMap: Record<LabelType, Label> = {
+  [LabelType.Interface]: { letter: 'I', variant: BadgeVariant.Success },
+  [LabelType.Class]: { letter: 'C',variant: BadgeVariant.Note },
+  [LabelType.Method]: { letter: 'M', variant: BadgeVariant.Danger },
+  [LabelType.Attribute]: { letter: 'A', variant: BadgeVariant.Caution },
+  [LabelType.Type]: { letter: 'T' },
+  [LabelType.Event]: { letter: 'E' },
+}
+
+
+
+
+---
+
+<StarlightPage
+  frontmatter={{
+    title: `${intf.getName()}`,
+    description: `ABAP interface documentation for ${intf.getName()}`,
+  }}
+  headings={headings}
+  >
+
+    <h2 id="index">Index</h2>
+<ul class="columns-2 md:columns-3 gap-2 list-none p-0 mb-8">
+  {methods.map(method => (
+    <li class="mb-1">
+      <Badge variant={LabelMap.Method.variant} size="medium" text={LabelMap.Method.letter} />
+      <a href={`#${method.getName().toLowerCase()}`}>{method.getName()}</a>
+    </li>
+  ))}
+  {attributes.map(attr => (
+    <li class="mb-1">
+      <Badge variant={LabelMap.Attribute.variant} size="medium" text={LabelMap.Attribute.letter} />
+      <a href={`#${attr.getName().toLowerCase()}`}>{attr.getName()}</a>
+    </li>
+  ))}
+  {types.map(type => (
+    <li class="mb-1">
+      <Badge variant={LabelMap.Type.variant} size="medium" text={LabelMap.Type.letter} />
+      <a href={`#${type.type.getName().toLowerCase()}`}>{type.type.getName()}</a>
+    </li>
+  ))}
+</ul>
+
+  <h2 id="methods">Methods</h2>
+  {methods.length === 0 ? (
+    <p><em>No methods defined.</em></p>
+  ) : (
+    <>     
+      <div class="grid gap-4 mt-6">
+        {methods.map(method => {
+          const meta = info?.methods.find(m => m.name === method.getName());
+          
+          return (
+            <section id={method.getName().toLowerCase()}>
+              <h3 class="text-lg font-semibold mb-2"> <Badge variant={LabelMap.Method.variant} text={LabelMap.Method.letter} />{method.getName()}()</h3>              
+              <pre><code>{getMethodSignature(method)}</code></pre>
+            </section>
+          );
+        })}
+      </div>
+    </>
+  )}
+
+  <h2 id="attributes">Attributes</h2>
+  {attributes.length === 0 ? (
+    <p><em>No attributes defined.</em></p>
+  ) : (
+    <ul>
+      {attributes.map(attr => {
+        const meta = info?.attributes.find(a => a.name === attr.getName());
+        const emoji = getAbapAccessEmoji(attr.getVisibility(), meta?.level === 'static');
+        return (
+          <li>
+            {emoji} <code>{attr.getName()}: {attr.getType()?.toText(0)}</code>
+          </li>
+        );
+      })}
+    </ul>
+  )}
+
+  <h2 id="types">Types</h2>
+  {types.length === 0 ? (
+    <p><em>No types defined.</em></p>
+  ) : (
+    <ul>
+      {types.map(type => (
+        <li><code>{type.type.getName()}</code></li>
+      ))}
+    </ul>
+  )}
+</StarlightPage>
